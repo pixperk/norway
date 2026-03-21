@@ -90,9 +90,60 @@ Routes are matched using a radix tree (compressed trie). One tree per host. Look
 ![Radix Tree Algorithm](assets/radix_tree_algo.png)
 
 Supports:
-- **Static segments** `/api/v1/users` -- exact match
-- **Param segments** `/users/:id` -- captures one segment (e.g. `id=42`)
-- **Wildcard** `/static/*filepath` -- captures everything remaining (e.g. `filepath=css/main.css`)
+- **Static segments** `/api/v1/users`, exact match
+- **Param segments** `/users/:id`, captures one segment (e.g. `id=42`)
+- **Wildcard** `/static/*filepath`, captures everything remaining (e.g. `filepath=css/main.css`)
+
+## Middleware Chain
+
+Every feature that touches a request (logging, headers, rate limiting) is a middleware, a function that wraps an `http.Handler` and returns an `http.Handler`. They compose infinitely via `Chain()`.
+
+```mermaid
+graph LR
+    REQ[Request] --> L[Logging]
+    L --> RL[Rate Limit]
+    RL --> H[Headers]
+    H --> P[Proxy]
+    P --> B[Backend]
+    B -.-> P
+    P -.-> H
+    H -.-> RL
+    RL -.-> L
+    L -.-> RES[Response]
+
+    style REQ fill:#3498db,color:#fff
+    style RES fill:#2ecc71,color:#fff
+    style P fill:#e74c3c,color:#fff
+```
+
+Each middleware sees the request on the way in, calls `next.ServeHTTP`, then sees the response on the way out. The logging middleware starts a timer before and logs duration + status after. The headers middleware intercepts `WriteHeader` to inject/remove headers before they're sent to the client.
+
+Configured per-route in the DSL:
+```nginx
+route api {
+    use rate-limit    # first in chain = outermost
+    use add-headers
+    use logger        # last in chain = closest to proxy
+}
+```
+
+### Structured Logging
+
+Every request produces a single JSON log line:
+```json
+{
+  "ts": "2026-03-22T10:30:15.123Z",
+  "method": "GET",
+  "host": "api.example.com",
+  "path": "/v1/users",
+  "status": 200,
+  "duration_ms": 12.34,
+  "bytes": 1842,
+  "client_ip": "192.168.1.50:48754",
+  "user_agent": "curl/8.5.0",
+  "proto": "HTTP/1.1"
+}
+```
 
 ## Progress
 
@@ -102,9 +153,11 @@ Supports:
 - [x] Radix tree routing with param/wildcard support
 - [x] Host-based request dispatching
 - [x] End-to-end proxying via `norway.conf`
+- [x] Middleware chain (composable, per-route from config)
+- [x] Structured JSON request logging (method, host, path, status, duration, bytes, client IP)
+- [x] Response header injection and removal
 
 ### Coming Up
-- [ ] Middleware chain
 - [ ] Load balancing + health checks
 - [ ] Rate limiting + stats endpoint
 - [ ] Dynamic config reload
