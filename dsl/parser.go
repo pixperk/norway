@@ -317,12 +317,21 @@ func (p *Parser) parseMiddleware() (Middleware, error) {
 			}
 			mw.Type = v.Value
 		} else {
-			// generic key-value: accept ident, string, or number as value
-			v := p.advance()
-			if v.Type != TOKEN_IDENT && v.Type != TOKEN_STRING && v.Type != TOKEN_NUMBER {
+			// collect all values on this line (e.g. "set X-Proxy norway" → key="set", values=["X-Proxy", "norway"])
+			var values []string
+			for p.peek().Type == TOKEN_IDENT || p.peek().Type == TOKEN_STRING || p.peek().Type == TOKEN_NUMBER {
+				values = append(values, p.advance().Value)
+			}
+			if len(values) == 0 {
+				v := p.peek()
 				return mw, fmt.Errorf("%d:%d: expected value for %q, got %q", v.Line, v.Col, key.Value, v.Value)
 			}
-			mw.Config[key.Value] = v.Value
+			// single value: key → value, multi value: "key subkey" → value
+			if len(values) == 1 {
+				mw.Config[key.Value] = values[0]
+			} else {
+				mw.Config[key.Value+" "+values[0]] = values[1]
+			}
 		}
 		p.skipNewlines()
 	}
