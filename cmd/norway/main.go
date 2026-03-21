@@ -8,9 +8,11 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/pixperk/norway/dsl"
+	"github.com/pixperk/norway/middleware"
 	"github.com/pixperk/norway/router"
 )
 
@@ -34,11 +36,17 @@ func main() {
 		log.Fatalf("config validation error: %v", err)
 	}
 
+	// index middlewares by name for quick lookup
+	mwConfigs := make(map[string]dsl.Middleware)
+	for _, mw := range cfg.Middlewares {
+		mwConfigs[mw.Name] = mw
+	}
+
 	// build service proxies: service name -> reverse proxy
 	proxies := make(map[string]*httputil.ReverseProxy)
 	for _, svc := range cfg.Services {
 		// for now use the first server in each service
-		// todo : support multiple servers per service with load balancing
+		// todo: support multiple servers per service with load balancing
 		target, err := url.Parse(svc.Servers[0].URL)
 		if err != nil {
 			log.Fatalf("service %q: invalid server URL %q: %v", svc.Name, svc.Servers[0].URL, err)
@@ -64,8 +72,9 @@ func main() {
 			log.Fatalf("route %q: service %q not found", route.Name, route.Service)
 		}
 
-		// wrap proxy with request logging
-		handler := loggingHandler(route.Name, proxy)
+		// build middleware chain for this route from config
+		mws := buildMiddlewares(route.Middlewares, mwConfigs)
+		handler := middleware.Chain(proxy, mws...)
 
 		path := route.Path
 		if path == "" {
@@ -81,7 +90,6 @@ func main() {
 	for i, ep := range cfg.Entrypoints {
 		addr := ep.Listen
 		if i < len(cfg.Entrypoints)-1 {
-			// all but the last entrypoint run in a goroutine
 			go func(addr string) {
 				fmt.Printf("norway listening on %s\n", addr)
 				if err := http.ListenAndServe(addr, r); err != nil {
@@ -89,7 +97,6 @@ func main() {
 				}
 			}(addr)
 		} else {
-			// last one blocks
 			fmt.Printf("norway listening on %s\n", addr)
 			if err := http.ListenAndServe(addr, r); err != nil {
 				log.Fatalf("server error on %s: %v", addr, err)
@@ -98,11 +105,38 @@ func main() {
 	}
 }
 
-func loggingHandler(routeName string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		log.Printf("-> %s %s%s [route:%s]", r.Method, r.Host, r.URL.Path, routeName)
-		next.ServeHTTP(w, r)
-		log.Printf("<- %s %s%s [route:%s] (%s)", r.Method, r.Host, r.URL.Path, routeName, time.Since(start))
-	})
+// buildMiddlewares converts middleware names from the route config into actual Middleware functions
+func buildMiddlewares(names []string, configs map[string]dsl.Middleware) []middleware.Middleware {
+	var mws []middleware.Middleware
+	for _, name := range names {
+		mwCfg, ok := configs[name]
+		if !ok {
+			continue
+		}
+		switch mwCfg.Type {
+		case "logging":
+			mws = append(mws, middleware.Logging())
+		case "headers":
+			add, remove := parseHeadersConfig(mwCfg.Config)
+			mws = append(mws, middleware.Headers(add, remove))
+		}
+	}
+	return mws
+}
+
+// parseHeadersConfig extracts add/remove maps from the middleware config.
+// In the DSL, "set X-Proxy" maps to key "set X-Proxy" with value "norway",
+// and "remove" maps to key "remove" with the header name as value.
+func parseHeadersConfig(config map[string]string) (add map[string]string, remove []string) {
+	add = make(map[string]string)
+	for key, val := range config {
+		if strings.HasPrefix(key, "set ") {
+			headerName := strings.TrimPrefix(key, "set ")
+			add[headerName] = val
+		}
+		if key == "remove" {
+			remove = append(remove, val)
+		}
+	}
+	return add, remove
 }
