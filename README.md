@@ -130,6 +130,42 @@ graph LR
 
 The lexer tokenizes the raw text into typed tokens (idents, strings, numbers, braces, newlines). The parser consumes tokens and builds an AST of entrypoint/service/middleware/route nodes. The validator checks semantic correctness: do referenced services exist? Are there duplicate names? Is the balance strategy valid?
 
+## Radix Tree Routing
+
+Routes are matched using a radix tree (compressed trie). One tree per host. Lookup is O(k) where k = path length, not O(n) routes.
+
+```mermaid
+graph TD
+    ROOT["(root)"]
+    ROOT --> API["/api"]
+    ROOT --> APP["/app"]
+    ROOT --> STATIC["/static"]
+
+    API --> V1["/v1"]
+    API --> V2["/v2"]
+
+    V1 --> USERS["/users"]
+    V1 --> ORDERS["/orders"]
+
+    V2 --> USERSV2["/users"]
+
+    USERS --> PARAM["/:id"]
+
+    style ROOT fill:#333,color:#fff
+    style PARAM fill:#e74c3c,color:#fff
+
+    USERS -.- SVC1["-> api-service"]
+    ORDERS -.- SVC2["-> api-service"]
+    APP -.- SVC3["-> app-service"]
+    STATIC -.- SVC4["-> static-service"]
+    PARAM -.- SVC5["-> api-service"]
+```
+
+Supports:
+- **Static segments** `/api/v1/users` -- exact match
+- **Param segments** `/users/:id` -- captures one segment (e.g. `id=42`)
+- **Wildcard** `/static/*filepath` -- captures everything remaining (e.g. `filepath=css/main.css`)
+
 ## Request Lifecycle
 
 ```mermaid
@@ -160,10 +196,11 @@ sequenceDiagram
 ### Implemented
 - [x] Custom DSL with lexer, parser, and AST
 - [x] Config validation with semantic checks
-- [x] Skeleton reverse proxy with `httputil.ReverseProxy`
+- [x] Radix tree routing with param/wildcard support
+- [x] Host-based request dispatching
+- [x] End-to-end proxying via `norway.conf`
 
 ### Coming Up
-- [ ] Radix tree routing
 - [ ] Middleware chain
 - [ ] Load balancing + health checks
 - [ ] Rate limiting + stats endpoint
