@@ -6,52 +6,7 @@ Norway is a single binary that reads a `.conf` file and proxies HTTP traffic to 
 
 ## Architecture
 
-```mermaid
-graph TB
-    subgraph Clients
-        C1[Client 1]
-        C2[Client 2]
-        C3[Client N]
-    end
-
-    subgraph Norway
-        subgraph Entrypoints
-            EP1[":80 HTTP"]
-            EP2[":443 TLS"]
-        end
-
-        subgraph Core
-            RM[Route Matcher<br/>radix tree per host]
-            MC[Middleware Chain]
-            LB[Load Balancer]
-        end
-
-        subgraph Config Engine
-            DSL[DSL Parser<br/>lexer - parser - AST]
-            VAL[Validator]
-            HR[Hot Reloader]
-        end
-
-        subgraph Health
-            HC[Health Checker]
-        end
-    end
-
-    subgraph Backends
-        B1[backend:8001]
-        B2[backend:8002]
-        B3[backend:9001]
-    end
-
-    C1 & C2 & C3 --> EP1 & EP2
-    EP1 & EP2 --> RM
-    RM --> MC
-    MC --> LB
-    LB --> B1 & B2 & B3
-    HC -.->|poll| B1 & B2 & B3
-    DSL --> VAL --> HR
-    HR -.->|atomic swap| RM
-```
+![Norway Architecture](assets/norway_arch.png)
 
 ## The Config DSL
 
@@ -134,62 +89,14 @@ The lexer tokenizes the raw text into typed tokens (idents, strings, numbers, br
 
 Routes are matched using a radix tree (compressed trie). One tree per host. Lookup is O(k) where k = path length, not O(n) routes.
 
-```mermaid
-graph TD
-    ROOT["(root)"]
-    ROOT --> API["/api"]
-    ROOT --> APP["/app"]
-    ROOT --> STATIC["/static"]
+![Radix Tree](assets/radix_tree.png)
 
-    API --> V1["/v1"]
-    API --> V2["/v2"]
-
-    V1 --> USERS["/users"]
-    V1 --> ORDERS["/orders"]
-
-    V2 --> USERSV2["/users"]
-
-    USERS --> PARAM["/:id"]
-
-    style ROOT fill:#333,color:#fff
-    style PARAM fill:#e74c3c,color:#fff
-
-    USERS -.- SVC1["-> api-service"]
-    ORDERS -.- SVC2["-> api-service"]
-    APP -.- SVC3["-> app-service"]
-    STATIC -.- SVC4["-> static-service"]
-    PARAM -.- SVC5["-> api-service"]
-```
+![Radix Tree Algorithm](assets/radix_tree_algo.png)
 
 Supports:
 - **Static segments** `/api/v1/users` -- exact match
 - **Param segments** `/users/:id` -- captures one segment (e.g. `id=42`)
 - **Wildcard** `/static/*filepath` -- captures everything remaining (e.g. `filepath=css/main.css`)
-
-## Request Lifecycle
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant EP as Entrypoint
-    participant R as Router
-    participant MW as Middleware Chain
-    participant LB as Load Balancer
-    participant B as Backend
-
-    C->>EP: GET api.example.com/v1/users
-    EP->>R: Match host + path (radix tree)
-    R->>MW: Matched route
-    Note over MW: logging -> rate-limit -> headers
-    MW->>LB: Pick backend
-    Note over LB: round-robin / weighted / least-conn
-    LB->>B: Forward via httputil.ReverseProxy
-    B-->>LB: 200 OK
-    LB-->>MW: Response
-    Note over MW: Response walks back up the chain
-    MW-->>EP: Response
-    EP-->>C: 200 OK
-```
 
 ## Progress
 
