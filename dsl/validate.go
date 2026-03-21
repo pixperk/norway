@@ -2,6 +2,7 @@ package dsl
 
 import "fmt"
 
+// todo : later we can take it from loadbalancing package if we create one
 var validStrategies = map[string]bool{
 	"round-robin": true,
 	"least-conn":  true,
