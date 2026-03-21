@@ -75,13 +75,7 @@ Four block types, three layers of abstraction:
 
 ### DSL Pipeline
 
-```mermaid
-graph LR
-    A["norway.conf<br/>(raw text)"] --> B["Lexer<br/>text -> tokens"]
-    B --> C["Parser<br/>tokens -> AST"]
-    C --> D["Validator<br/>semantic checks"]
-    D --> E["Config structs<br/>ready to serve"]
-```
+![DSL Pipeline](assets/dsl.png)
 
 The lexer tokenizes the raw text into typed tokens (idents, strings, numbers, braces, newlines). The parser consumes tokens and builds an AST of entrypoint/service/middleware/route nodes. The validator checks semantic correctness: do referenced services exist? Are there duplicate names? Is the balance strategy valid?
 
@@ -90,6 +84,8 @@ The lexer tokenizes the raw text into typed tokens (idents, strings, numbers, br
 Routes are matched using a radix tree (compressed trie). One tree per host. Lookup is O(k) where k = path length, not O(n) routes.
 
 ![Radix Tree](assets/radix_tree.png)
+
+### Mechanism
 
 ![Radix Tree Algorithm](assets/radix_tree_algo.png)
 
