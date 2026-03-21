@@ -39,16 +39,21 @@ func (l *Lexer) advance() byte {
 }
 
 func (l *Lexer) NextToken() Token {
-	// skip spaces and tabs
-	for l.peek() == ' ' || l.peek() == '\t' {
-		l.advance()
-	}
-
-	// skip comments
-	if l.peek() == '#' {
-		for l.peek() != '\n' && l.peek() != 0 {
+	// skip spaces, tabs, and comments
+	for {
+		for l.peek() == ' ' || l.peek() == '\t' {
 			l.advance()
 		}
+		if l.peek() == '#' {
+			for l.peek() != '\n' && l.peek() != 0 {
+				l.advance()
+			}
+			if l.peek() == '\n' {
+				l.advance()
+			}
+			continue
+		}
+		break
 	}
 
 	// snapshot position before consuming the token
