@@ -68,12 +68,15 @@ func (n *node) insertSegment(seg string) *node {
 		}
 
 		//partial match, split the child node
+		// e.g. child="/api/v1", seg="/api/v2", common=6 ("/api/v")
+		// splitChild gets the old remainder "1" with old children/handler
+		// child becomes the common prefix "/api/v"
 		splitChild := &node{
-			path:     child.path[:common],
-			children: []*node{child},
+			path:     child.path[common:],
+			children: child.children,
 			handler:  child.handler,
 		}
-		child.path = child.path[common:]
+		child.path = child.path[:common]
 		child.children = []*node{splitChild}
 		child.handler = nil
 
