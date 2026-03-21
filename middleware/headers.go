@@ -33,6 +33,15 @@ func (h *headersRecorder) WriteHeader(status int) {
 	h.ResponseWriter.WriteHeader(status)
 }
 
+// Write intercepts the first write to trigger our WriteHeader if the handler
+// never called WriteHeader explicitly (common for 200 responses)
+func (h *headersRecorder) Write(b []byte) (int, error) {
+	if !h.wroteHeader {
+		h.WriteHeader(http.StatusOK)
+	}
+	return h.ResponseWriter.Write(b)
+}
+
 func Headers(add map[string]string, remove []string) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
