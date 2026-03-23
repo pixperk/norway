@@ -8,8 +8,10 @@ import (
 	"net/http/httputil"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/pixperk/norway/balance"
+	"github.com/pixperk/norway/health"
 	"github.com/pixperk/norway/dsl"
 	"github.com/pixperk/norway/middleware"
 	"github.com/pixperk/norway/router"
@@ -76,6 +78,15 @@ func main() {
 		}
 
 		log.Printf("service %q: %d backends, strategy=%s", svc.Name, len(backends), svc.Balance)
+
+		// start health checker if configured
+		if svc.Health != nil {
+			interval, _ := time.ParseDuration(svc.Health.Interval)
+			timeout, _ := time.ParseDuration(svc.Health.Timeout)
+			hc := health.New(backends, svc.Health.Path, interval, timeout)
+			hc.Start()
+			log.Printf("service %q: health checks every %s on %s", svc.Name, svc.Health.Interval, svc.Health.Path)
+		}
 	}
 
 	// build router from routes
