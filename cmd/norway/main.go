@@ -53,14 +53,26 @@ func main() {
 			backends = append(backends, b)
 		}
 
+		// if any backend has weight > 1, upgrade round-robin to weighted automatically
+		hasWeights := false
+		for _, b := range backends {
+			if b.Weight > 1 {
+				hasWeights = true
+				break
+			}
+		}
+
 		switch svc.Balance {
 		case "weighted":
 			balancers[svc.Name] = balance.NewWeighted(backends)
 		case "least-conn":
 			balancers[svc.Name] = balance.NewLeastConn(backends)
 		default:
-			// round-robin is the default
-			balancers[svc.Name] = balance.NewRoundRobin(backends)
+			if hasWeights {
+				balancers[svc.Name] = balance.NewWeighted(backends)
+			} else {
+				balancers[svc.Name] = balance.NewRoundRobin(backends)
+			}
 		}
 
 		log.Printf("service %q: %d backends, strategy=%s", svc.Name, len(backends), svc.Balance)

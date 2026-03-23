@@ -145,6 +145,28 @@ Every request produces a single JSON log line:
 }
 ```
 
+## Load Balancing
+
+Each service has a pool of backends and a strategy for picking which one handles the request. All strategies skip unhealthy backends automatically.
+
+| Strategy | Config | How it works |
+|----------|--------|-------------|
+| **Round-Robin** | `balance round-robin` | Atomic counter, each request goes to the next backend in rotation |
+| **Weighted** | `balance weighted` | Backends with higher weight get proportionally more traffic. Weight 3 gets 3x the requests of weight 1 |
+| **Least-Conn** | `balance least-conn` | Picks the backend with the fewest active connections. Tracks connections atomically per request |
+
+Configured per service in the DSL:
+```nginx
+service api {
+    balance round-robin
+
+    server http://localhost:8001 {
+        weight 3
+    }
+    server http://localhost:8002
+}
+```
+
 ## Progress
 
 ### Implemented
@@ -156,9 +178,10 @@ Every request produces a single JSON log line:
 - [x] Middleware chain (composable, per-route from config)
 - [x] Structured JSON request logging (method, host, path, status, duration, bytes, client IP)
 - [x] Response header injection and removal
+- [x] Load balancing (round-robin, weighted, least-conn)
 
 ### Coming Up
-- [ ] Load balancing + health checks
+- [ ] Health checks
 - [ ] Rate limiting + stats endpoint
 - [ ] Dynamic config reload
 - [ ] TLS termination
