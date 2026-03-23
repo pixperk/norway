@@ -6,11 +6,10 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"os"
 	"strings"
-	"time"
 
+	"github.com/pixperk/norway/balance"
 	"github.com/pixperk/norway/dsl"
 	"github.com/pixperk/norway/middleware"
 	"github.com/pixperk/norway/router"
@@ -42,39 +41,45 @@ func main() {
 		mwConfigs[mw.Name] = mw
 	}
 
-	// build service proxies: service name -> reverse proxy
-	proxies := make(map[string]*httputil.ReverseProxy)
+	// build a balancer for each service from its servers + strategy
+	balancers := make(map[string]balance.Balancer)
 	for _, svc := range cfg.Services {
-		// for now use the first server in each service
-		// todo: support multiple servers per service with load balancing
-		target, err := url.Parse(svc.Servers[0].URL)
-		if err != nil {
-			log.Fatalf("service %q: invalid server URL %q: %v", svc.Name, svc.Servers[0].URL, err)
+		var backends []*balance.Backend
+		for _, srv := range svc.Servers {
+			b, err := balance.NewBackend(srv.URL, srv.Weight)
+			if err != nil {
+				log.Fatalf("service %q: invalid server URL %q: %v", svc.Name, srv.URL, err)
+			}
+			backends = append(backends, b)
 		}
 
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		proxy.Transport = &http.Transport{
-			MaxIdleConnsPerHost: 100,
-			IdleConnTimeout:     90 * time.Second,
+		switch svc.Balance {
+		case "weighted":
+			balancers[svc.Name] = balance.NewWeighted(backends)
+		case "least-conn":
+			balancers[svc.Name] = balance.NewLeastConn(backends)
+		default:
+			// round-robin is the default
+			balancers[svc.Name] = balance.NewRoundRobin(backends)
 		}
-		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("proxy error: %s %s -> %v", r.Method, r.URL.Path, err)
-			http.Error(w, "bad gateway", http.StatusBadGateway)
-		}
-		proxies[svc.Name] = proxy
+
+		log.Printf("service %q: %d backends, strategy=%s", svc.Name, len(backends), svc.Balance)
 	}
 
 	// build router from routes
 	r := router.New()
 	for _, route := range cfg.Routes {
-		proxy, ok := proxies[route.Service]
+		bal, ok := balancers[route.Service]
 		if !ok {
 			log.Fatalf("route %q: service %q not found", route.Name, route.Service)
 		}
 
+		// the handler picks a backend via the balancer and proxies to it
+		proxyHandler := balancedProxy(bal)
+
 		// build middleware chain for this route from config
 		mws := buildMiddlewares(route.Middlewares, mwConfigs)
-		handler := middleware.Chain(proxy, mws...)
+		handler := middleware.Chain(proxyHandler, mws...)
 
 		path := route.Path
 		if path == "" {
@@ -103,6 +108,31 @@ func main() {
 			}
 		}
 	}
+}
+
+// balancedProxy returns a handler that picks a backend from the balancer on each request,
+// increments active connections, proxies, then decrements.
+func balancedProxy(bal balance.Balancer) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backend := bal.Next()
+		if backend == nil {
+			http.Error(w, "no healthy backends", http.StatusServiceUnavailable)
+			return
+		}
+
+		// track active connections for least-conn
+		backend.ActiveConns.Add(1)
+		defer backend.ActiveConns.Add(-1)
+
+		proxy := httputil.NewSingleHostReverseProxy(backend.URL)
+		proxy.Transport = backend.Transport
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("proxy error: %s %s -> %s: %v", r.Method, r.URL.Path, backend.URL, err)
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+		}
+
+		proxy.ServeHTTP(w, r)
+	})
 }
 
 // buildMiddlewares converts middleware names from the route config into actual Middleware functions
