@@ -36,7 +36,8 @@ func NewBackend(rawURL string, weight int) (*Backend, error) {
 		URL:    u,
 		Weight: weight,
 		Transport: &http.Transport{
-			MaxIdleConnsPerHost: 100,
+			MaxIdleConnsPerHost: 32,
+			MaxConnsPerHost:     64,
 			IdleConnTimeout:     90 * time.Second,
 		},
 	}

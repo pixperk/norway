@@ -3,6 +3,7 @@ package health
 import (
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pixperk/norway/balance"
@@ -80,7 +81,8 @@ func (c *Checker) checkAll() {
 
 // ping sends a GET to the backend's health path, returns true if 2xx
 func (c *Checker) ping(b *balance.Backend) bool {
-	url := b.URL.String() + c.path
+	base := strings.TrimRight(b.URL.String(), "/")
+	url := base + c.path
 	resp, err := c.client.Get(url)
 	if err != nil {
 		return false

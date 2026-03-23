@@ -1,18 +1,21 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pixperk/norway/balance"
-	"github.com/pixperk/norway/health"
 	"github.com/pixperk/norway/dsl"
+	"github.com/pixperk/norway/health"
 	"github.com/pixperk/norway/middleware"
 	"github.com/pixperk/norway/router"
 )
@@ -115,22 +118,32 @@ func main() {
 	}
 
 	// start a listener for each entrypoint
-	for i, ep := range cfg.Entrypoints {
-		addr := ep.Listen
-		if i < len(cfg.Entrypoints)-1 {
-			go func(addr string) {
-				fmt.Printf("norway listening on %s\n", addr)
-				if err := http.ListenAndServe(addr, r); err != nil {
-					log.Fatalf("server error on %s: %v", addr, err)
-				}
-			}(addr)
-		} else {
-			fmt.Printf("norway listening on %s\n", addr)
-			if err := http.ListenAndServe(addr, r); err != nil {
-				log.Fatalf("server error on %s: %v", addr, err)
+	var servers []*http.Server
+	for _, ep := range cfg.Entrypoints {
+		srv := &http.Server{Addr: ep.Listen, Handler: r}
+		servers = append(servers, srv)
+
+		go func(s *http.Server) {
+			fmt.Printf("norway listening on %s\n", s.Addr)
+			if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("server error on %s: %v", s.Addr, err)
 			}
-		}
+		}(srv)
 	}
+
+	// graceful shutdown on SIGINT/SIGTERM
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+
+	log.Println("shutting down, draining connections...")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	for _, srv := range servers {
+		srv.Shutdown(ctx)
+	}
+	log.Println("norway stopped")
 }
 
 // balancedProxy returns a handler that picks a backend from the balancer on each request,
@@ -146,6 +159,11 @@ func balancedProxy(bal balance.Balancer) http.Handler {
 		// track active connections for least-conn
 		backend.ActiveConns.Add(1)
 		defer backend.ActiveConns.Add(-1)
+
+		// timeout so slow backends don't hang forever
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		r = r.WithContext(ctx)
 
 		proxy := httputil.NewSingleHostReverseProxy(backend.URL)
 		proxy.Transport = backend.Transport
