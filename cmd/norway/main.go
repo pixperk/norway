@@ -18,6 +18,7 @@ import (
 	"github.com/pixperk/norway/health"
 	"github.com/pixperk/norway/middleware"
 	"github.com/pixperk/norway/router"
+	"github.com/pixperk/norway/stats"
 )
 
 func main() {
@@ -92,6 +93,13 @@ func main() {
 		}
 	}
 
+	// collect all backends across services for the stats collector
+	var allBackends []*balance.Backend
+	for _, bal := range balancers {
+		allBackends = append(allBackends, bal.All()...)
+	}
+	collector := stats.NewCollector(allBackends)
+
 	// build router from routes
 	r := router.New()
 	for _, route := range cfg.Routes {
@@ -101,7 +109,8 @@ func main() {
 		}
 
 		// the handler picks a backend via the balancer and proxies to it
-		proxyHandler := balancedProxy(bal)
+		routeName := route.Name
+		proxyHandler := balancedProxy(bal, collector, routeName)
 
 		// build middleware chain for this route from config
 		mws := buildMiddlewares(route.Middlewares, mwConfigs)
@@ -116,6 +125,9 @@ func main() {
 			r.Add(route.Host, path, handler)
 		}
 	}
+
+	// mount stats endpoint on all hosts
+	r.AddInternal("/norway/stats", collector.Handler())
 
 	// start a listener for each entrypoint
 	var servers []*http.Server
@@ -147,9 +159,12 @@ func main() {
 }
 
 // balancedProxy returns a handler that picks a backend from the balancer on each request,
-// increments active connections, proxies, then decrements.
-func balancedProxy(bal balance.Balancer) http.Handler {
+// increments active connections, records stats, proxies, then decrements.
+func balancedProxy(bal balance.Balancer, collector *stats.Collector, routeName string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		done := collector.RecordRequest(routeName)
+		defer done()
+
 		backend := bal.Next()
 		if backend == nil {
 			http.Error(w, "no healthy backends", http.StatusServiceUnavailable)

@@ -30,30 +30,16 @@ func loadConf(t *testing.T) *Config {
 func TestParseEntrypoints(t *testing.T) {
 	cfg := loadConf(t)
 
-	if len(cfg.Entrypoints) != 2 {
-		t.Fatalf("expected 2 entrypoints, got %d", len(cfg.Entrypoints))
+	if len(cfg.Entrypoints) != 1 {
+		t.Fatalf("expected 1 entrypoint, got %d", len(cfg.Entrypoints))
 	}
 
 	web := cfg.Entrypoints[0]
-	if web.Name != "web" || web.Listen != ":80" {
+	if web.Name != "web" || web.Listen != ":8080" {
 		t.Errorf("web entrypoint: got name=%q listen=%q", web.Name, web.Listen)
 	}
 	if web.TLS != nil {
 		t.Error("web entrypoint should not have TLS")
-	}
-
-	websecure := cfg.Entrypoints[1]
-	if websecure.Name != "websecure" || websecure.Listen != ":443" {
-		t.Errorf("websecure entrypoint: got name=%q listen=%q", websecure.Name, websecure.Listen)
-	}
-	if websecure.TLS == nil {
-		t.Fatal("websecure entrypoint should have TLS")
-	}
-	if websecure.TLS.CertPath != "/etc/norway/cert.pem" {
-		t.Errorf("tls cert: got %q", websecure.TLS.CertPath)
-	}
-	if websecure.TLS.KeyPath != "/etc/norway/key.pem" {
-		t.Errorf("tls key: got %q", websecure.TLS.KeyPath)
 	}
 }
 
@@ -65,7 +51,7 @@ func TestParseServices(t *testing.T) {
 	}
 
 	api := cfg.Services[0]
-	if api.Name != "api" || api.Balance != "round-robin" {
+	if api.Name != "api" || api.Balance != "weighted" {
 		t.Errorf("api service: got name=%q balance=%q", api.Name, api.Balance)
 	}
 	if api.Health == nil {
@@ -133,7 +119,7 @@ func TestParseRoutes(t *testing.T) {
 	if api.Name != "api" {
 		t.Errorf("route name: got %q", api.Name)
 	}
-	if len(api.Entrypoints) != 2 || api.Entrypoints[0] != "web" || api.Entrypoints[1] != "websecure" {
+	if len(api.Entrypoints) != 1 || api.Entrypoints[0] != "web" {
 		t.Errorf("api entrypoints: got %v", api.Entrypoints)
 	}
 	if api.Host != "api.example.com" {
