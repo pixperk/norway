@@ -17,6 +17,7 @@ import (
 	"github.com/pixperk/norway/dsl"
 	"github.com/pixperk/norway/health"
 	"github.com/pixperk/norway/middleware"
+	"github.com/pixperk/norway/reload"
 	"github.com/pixperk/norway/router"
 	"github.com/pixperk/norway/stats"
 )
@@ -41,25 +42,87 @@ func main() {
 		log.Fatalf("config validation error: %v", err)
 	}
 
-	// index middlewares by name for quick lookup
+	// initial build
+	handler, checkers, collector := buildFromConfig(cfg)
+	r := handler.(*router.Router)
+
+	// set up hot reload
+	swappable := reload.NewSwappableHandler(r)
+	reloader := reload.New(*configPath, swappable, buildFromConfig)
+	reloader.SetCheckers(checkers)
+
+	// mount internal endpoints
+	r.AddInternal("/norway/stats", collector.Handler())
+	r.AddInternal("/norway/reload", reloader.APIHandler())
+
+	// watch config file for changes
+	reloader.WatchFile()
+
+	// start a listener for each entrypoint
+	var servers []*http.Server
+	for _, ep := range cfg.Entrypoints {
+		srv := &http.Server{Addr: ep.Listen, Handler: swappable}
+		servers = append(servers, srv)
+
+		go func(s *http.Server) {
+			fmt.Printf("norway listening on %s\n", s.Addr)
+			if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("server error on %s: %v", s.Addr, err)
+			}
+		}(srv)
+	}
+
+	// SIGINT/SIGTERM = shutdown, SIGHUP = reload
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+
+	for s := range sig {
+		if s == syscall.SIGHUP {
+			log.Println("received SIGHUP, reloading config...")
+			if err := reloader.Reload(); err != nil {
+				log.Printf("reload failed: %v", err)
+			}
+			continue
+		}
+
+		// SIGINT or SIGTERM = shutdown
+		log.Println("shutting down, draining connections...")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+
+		for _, srv := range servers {
+			srv.Shutdown(ctx)
+		}
+		cancel()
+		log.Println("norway stopped")
+		return
+	}
+}
+
+// buildFromConfig takes a parsed config and builds a router with balancers,
+// health checkers, and a stats collector. Used on startup and on reload.
+func buildFromConfig(cfg *dsl.Config) (http.Handler, []*health.Checker, *stats.Collector) {
+	// index middlewares by name
 	mwConfigs := make(map[string]dsl.Middleware)
 	for _, mw := range cfg.Middlewares {
 		mwConfigs[mw.Name] = mw
 	}
 
-	// build a balancer for each service from its servers + strategy
+	// build balancers and health checkers
 	balancers := make(map[string]balance.Balancer)
+	var checkers []*health.Checker
+
 	for _, svc := range cfg.Services {
 		var backends []*balance.Backend
 		for _, srv := range svc.Servers {
 			b, err := balance.NewBackend(srv.URL, srv.Weight)
 			if err != nil {
-				log.Fatalf("service %q: invalid server URL %q: %v", svc.Name, srv.URL, err)
+				log.Printf("service %q: invalid server URL %q: %v", svc.Name, srv.URL, err)
+				continue
 			}
 			backends = append(backends, b)
 		}
 
-		// if any backend has weight > 1, upgrade round-robin to weighted automatically
+		// if any backend has weight > 1, upgrade round-robin to weighted
 		hasWeights := false
 		for _, b := range backends {
 			if b.Weight > 1 {
@@ -83,36 +146,35 @@ func main() {
 
 		log.Printf("service %q: %d backends, strategy=%s", svc.Name, len(backends), svc.Balance)
 
-		// start health checker if configured
 		if svc.Health != nil {
 			interval, _ := time.ParseDuration(svc.Health.Interval)
 			timeout, _ := time.ParseDuration(svc.Health.Timeout)
 			hc := health.New(backends, svc.Health.Path, interval, timeout)
 			hc.Start()
+			checkers = append(checkers, hc)
 			log.Printf("service %q: health checks every %s on %s", svc.Name, svc.Health.Interval, svc.Health.Path)
 		}
 	}
 
-	// collect all backends across services for the stats collector
+	// stats collector with all backends
 	var allBackends []*balance.Backend
 	for _, bal := range balancers {
 		allBackends = append(allBackends, bal.All()...)
 	}
 	collector := stats.NewCollector(allBackends)
 
-	// build router from routes
+	// build router
 	r := router.New()
 	for _, route := range cfg.Routes {
 		bal, ok := balancers[route.Service]
 		if !ok {
-			log.Fatalf("route %q: service %q not found", route.Name, route.Service)
+			log.Printf("route %q: service %q not found, skipping", route.Name, route.Service)
+			continue
 		}
 
-		// the handler picks a backend via the balancer and proxies to it
 		routeName := route.Name
 		proxyHandler := balancedProxy(bal, collector, routeName)
 
-		// build middleware chain for this route from config
 		mws := buildMiddlewares(route.Middlewares, mwConfigs)
 		handler := middleware.Chain(proxyHandler, mws...)
 
@@ -126,40 +188,11 @@ func main() {
 		}
 	}
 
-	// mount stats endpoint on all hosts
-	r.AddInternal("/norway/stats", collector.Handler())
-
-	// start a listener for each entrypoint
-	var servers []*http.Server
-	for _, ep := range cfg.Entrypoints {
-		srv := &http.Server{Addr: ep.Listen, Handler: r}
-		servers = append(servers, srv)
-
-		go func(s *http.Server) {
-			fmt.Printf("norway listening on %s\n", s.Addr)
-			if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("server error on %s: %v", s.Addr, err)
-			}
-		}(srv)
-	}
-
-	// graceful shutdown on SIGINT/SIGTERM
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
-	<-quit
-
-	log.Println("shutting down, draining connections...")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	for _, srv := range servers {
-		srv.Shutdown(ctx)
-	}
-	log.Println("norway stopped")
+	return r, checkers, collector
 }
 
-// balancedProxy returns a handler that picks a backend from the balancer on each request,
-// increments active connections, records stats, proxies, then decrements.
+// balancedProxy returns a handler that picks a backend from the balancer,
+// records stats, proxies the request, then cleans up.
 func balancedProxy(bal balance.Balancer, collector *stats.Collector, routeName string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		done := collector.RecordRequest(routeName)
@@ -171,11 +204,9 @@ func balancedProxy(bal balance.Balancer, collector *stats.Collector, routeName s
 			return
 		}
 
-		// track active connections for least-conn
 		backend.ActiveConns.Add(1)
 		defer backend.ActiveConns.Add(-1)
 
-		// timeout so slow backends don't hang forever
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		r = r.WithContext(ctx)
@@ -191,7 +222,7 @@ func balancedProxy(bal balance.Balancer, collector *stats.Collector, routeName s
 	})
 }
 
-// buildMiddlewares converts middleware names from the route config into actual Middleware functions
+// buildMiddlewares converts middleware names into actual Middleware functions
 func buildMiddlewares(names []string, configs map[string]dsl.Middleware) []middleware.Middleware {
 	var mws []middleware.Middleware
 	for _, name := range names {
@@ -220,9 +251,6 @@ func buildMiddlewares(names []string, configs map[string]dsl.Middleware) []middl
 	return mws
 }
 
-// parseHeadersConfig extracts add/remove maps from the middleware config.
-// In the DSL, "set X-Proxy" maps to key "set X-Proxy" with value "norway",
-// and "remove" maps to key "remove" with the header name as value.
 func parseHeadersConfig(config map[string]string) (add map[string]string, remove []string) {
 	add = make(map[string]string)
 	for key, val := range config {
