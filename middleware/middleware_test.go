@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestChain(t *testing.T) {
@@ -169,5 +170,120 @@ func TestHeadersAddAndRemove(t *testing.T) {
 	}
 	if rec.Header().Get("X-Powered-By") != "" {
 		t.Errorf("X-Powered-By should be removed")
+	}
+}
+
+func TestRateLimitAllows(t *testing.T) {
+	// burst=5, rate=100/s, should allow 5 rapid requests
+	handler := RateLimit(100, 5)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+
+	for i := range 5 {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = "192.168.1.1:1234"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 200 {
+			t.Errorf("request %d: got %d, want 200", i, rec.Code)
+		}
+	}
+}
+
+func TestRateLimitRejects(t *testing.T) {
+	// burst=3, rate=1/s, send 4 rapid requests, 4th should be rejected
+	handler := RateLimit(1, 3)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+
+	for i := range 4 {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = "10.0.0.1:5678"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if i < 3 && rec.Code != 200 {
+			t.Errorf("request %d: got %d, want 200", i, rec.Code)
+		}
+		if i == 3 {
+			if rec.Code != 429 {
+				t.Errorf("request %d: got %d, want 429", i, rec.Code)
+			}
+			if rec.Header().Get("Retry-After") == "" {
+				t.Error("expected Retry-After header on 429")
+			}
+		}
+	}
+}
+
+func TestRateLimitRefills(t *testing.T) {
+	// burst=1, rate=1000/s (fast refill), exhaust then wait briefly
+	handler := RateLimit(1000, 1)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+
+	// exhaust the bucket
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.2:1111"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("first request should pass, got %d", rec.Code)
+	}
+
+	// second should fail
+	req = httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.2:1111"
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != 429 {
+		t.Fatalf("second request should be rejected, got %d", rec.Code)
+	}
+
+	// wait for refill (1ms at 1000/s = 1 token)
+	time.Sleep(2 * time.Millisecond)
+
+	// third should pass after refill
+	req = httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.2:1111"
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Errorf("third request after refill should pass, got %d", rec.Code)
+	}
+}
+
+func TestRateLimitPerIP(t *testing.T) {
+	// burst=1, each IP gets its own bucket
+	handler := RateLimit(1, 1)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+
+	// IP A uses its token
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "1.1.1.1:1234"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Errorf("IP A first request: got %d, want 200", rec.Code)
+	}
+
+	// IP A is now exhausted
+	req = httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "1.1.1.1:1234"
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != 429 {
+		t.Errorf("IP A second request: got %d, want 429", rec.Code)
+	}
+
+	// IP B should still be fine
+	req = httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "2.2.2.2:5678"
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Errorf("IP B first request: got %d, want 200", rec.Code)
 	}
 }
