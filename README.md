@@ -167,6 +167,50 @@ service api {
 }
 ```
 
+## Rate Limiting
+
+Per-client IP rate limiting using the token bucket algorithm. Each IP gets its own bucket with a configurable fill rate and burst capacity. When the bucket is empty, requests get a `429 Too Many Requests` with a `Retry-After` header telling the client when to try again.
+
+Stale buckets (idle for 10+ minutes) are cleaned up automatically so memory stays bounded under traffic from many unique IPs.
+
+```nginx
+middleware rate-limit {
+    type ratelimit
+    rate 100       # 100 tokens per second (sustained rate)
+    burst 50       # bucket holds 50 tokens (max burst)
+}
+
+route api {
+    use rate-limit
+}
+```
+
+- `rate` controls the sustained request rate (tokens refilled per second)
+- `burst` controls how many requests can fire at once before throttling kicks in
+
+## Stats Endpoint
+
+Hit `/norway/stats` on any entrypoint to get a live JSON snapshot of the proxy:
+
+```json
+{
+  "uptime": "2h15m30s",
+  "total_requests": 148293,
+  "active_conns": 12,
+  "routes": {
+    "api": { "requests": 120000, "avg_latency_ms": 8.42 },
+    "app": { "requests": 28293, "avg_latency_ms": 3.17 }
+  },
+  "backends": [
+    { "url": "http://localhost:8001", "healthy": true, "active_conns": 7 },
+    { "url": "http://localhost:8002", "healthy": true, "active_conns": 5 },
+    { "url": "http://localhost:3000", "healthy": false, "active_conns": 0 }
+  ]
+}
+```
+
+All counters are atomic. The stats handler reads live pointers to backend state, so health and connection counts are always current, not cached.
+
 ## Progress
 
 ### Implemented
@@ -179,10 +223,12 @@ service api {
 - [x] Structured JSON request logging (method, host, path, status, duration, bytes, client IP)
 - [x] Response header injection and removal
 - [x] Load balancing (round-robin, weighted, least-conn)
+- [x] Active health checks (background goroutines, auto-remove/restore)
+- [x] Token bucket rate limiting (per-client IP, configurable rate/burst)
+- [x] Live stats endpoint (`/norway/stats` with routes, backends, latency)
 
 ### Coming Up
-- [ ] Health checks
-- [ ] Rate limiting + stats endpoint
-- [ ] Dynamic config reload
+- [ ] Dynamic config reload (hot reload via fsnotify, SIGHUP, API)
 - [ ] TLS termination
+- [ ] Benchmarks
 - [ ] TUI dashboard
