@@ -190,6 +190,16 @@ func buildMiddlewares(names []string, configs map[string]dsl.Middleware) []middl
 		case "headers":
 			add, remove := parseHeadersConfig(mwCfg.Config)
 			mws = append(mws, middleware.Headers(add, remove))
+		case "ratelimit":
+			rate := 100.0
+			burst := 50
+			if v, ok := mwCfg.Config["rate"]; ok {
+				fmt.Sscanf(v, "%f", &rate)
+			}
+			if v, ok := mwCfg.Config["burst"]; ok {
+				fmt.Sscanf(v, "%d", &burst)
+			}
+			mws = append(mws, middleware.RateLimit(rate, burst))
 		}
 	}
 	return mws
