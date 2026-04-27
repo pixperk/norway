@@ -17,24 +17,31 @@ import (
 	"github.com/pixperk/norway/stats"
 )
 
+// handlerBox wraps an http.Handler in a concrete type so atomic.Value gets the
+// same concrete type on every store. atomic.Value panics if you store a
+// HandlerFunc once and a *Router next; the box hides those interface differences.
+type handlerBox struct {
+	h http.Handler
+}
+
 // SwappableHandler wraps an http.Handler that can be atomically replaced.
 // The http.Server holds a pointer to this; on reload we swap the inner handler.
 type SwappableHandler struct {
-	handler atomic.Value // stores http.Handler
+	handler atomic.Value // stores *handlerBox
 }
 
 func NewSwappableHandler(h http.Handler) *SwappableHandler {
 	s := &SwappableHandler{}
-	s.handler.Store(h)
+	s.handler.Store(&handlerBox{h: h})
 	return s
 }
 
 func (s *SwappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.handler.Load().(http.Handler).ServeHTTP(w, r)
+	s.handler.Load().(*handlerBox).h.ServeHTTP(w, r)
 }
 
 func (s *SwappableHandler) Swap(h http.Handler) {
-	s.handler.Store(h)
+	s.handler.Store(&handlerBox{h: h})
 }
 
 // BuildFunc is the function that turns a parsed config into a router.

@@ -34,3 +34,6 @@ diag.md
 
 # Local TLS certs (self-signed for testing)
 certs/
+
+# Benchmark profiles and saved runs
+profiles/

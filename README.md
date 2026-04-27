@@ -2,7 +2,17 @@
 
 A focused, observable reverse proxy with a clean config DSL. An alternative to Traefik for people who don't need Kubernetes, service discovery, or a 100MB binary.
 
-Norway is a single binary that reads a `.conf` file and proxies HTTP traffic to your backends with route matching, middleware chains, load balancing, and health checks. No YAML indentation hell, no 47-page documentation to read before you can route a request.
+Norway is a single binary that reads a `.conf` file and proxies HTTP traffic to your backends with route matching, middleware chains, load balancing, health checks, rate limiting, live stats, hot reload, and TLS termination. No YAML indentation hell, no 47-page documentation to read before you can route a request.
+
+```
+20,000 req/s sustained, 100% success, p99 = 14.6 ms
+ 5,000 req/s sustained, 100% success, p99 = 908 us
+ ~95 us proxy overhead vs direct backend
+ ~63 ns radix tree lookup, zero allocations
+ ~21 us full hot reload cycle (lex + parse + validate + build + swap)
+```
+
+Numbers from a Ryzen 7 5800HS. Full breakdown in [bench/README.md](bench/README.md). Run `make bench-all` to reproduce.
 
 ## Architecture
 
@@ -230,6 +240,88 @@ kill -HUP $(pgrep norway)
 
 The file watcher monitors the config directory rather than the file directly so editor write-rename saves (vim, helix) are caught. Old health checkers are stopped on swap so background goroutines do not leak.
 
+## TLS Termination
+
+Norway terminates TLS at the proxy. Clients hit `https://...`, norway does the handshake, decrypts, routes the plain request to the backend over HTTP. Backends never see the cert and never need their own TLS config.
+
+Each entrypoint independently chooses TLS or plain HTTP. The TLS block in the DSL points at a cert and key on disk:
+
+```nginx
+entrypoint web {
+    listen :8080
+}
+
+entrypoint websecure {
+    listen :8443
+    tls {
+        cert certs/cert.pem
+        key  certs/key.pem
+    }
+}
+```
+
+For local testing, generate a self-signed cert:
+
+```bash
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout certs/key.pem -out certs/cert.pem \
+  -subj "/CN=localhost"
+```
+
+Then `curl -k https://localhost:8443/...` works (the `-k` skips cert validation since it is self-signed). TLSv1.3 with ALPN h2 is negotiated by default.
+
+To force all plain traffic to HTTPS, attach the redirect middleware to a route on the plain entrypoint:
+
+```nginx
+middleware force-https {
+    type https-redirect
+    host example.com:8443
+}
+```
+
+## Benchmarks
+
+Headline numbers, Ryzen 7 5800HS. Full breakdown in [bench/README.md](bench/README.md).
+
+### Hot path (per-request, microbenchmarked)
+
+| Operation                      | Result                |
+|--------------------------------|-----------------------|
+| Radix tree static lookup       | 63 ns, 0 allocs       |
+| Radix tree param lookup        | 43 ns, 0 allocs       |
+| Round-robin pick               | 2.5 ns, 0 allocs      |
+| Least-conn pick (8 backends)   | 7.5 ns, 0 allocs      |
+| Five-middleware chain          | 26 ns, 0 allocs       |
+| Logging middleware (JSON)      | 331 ns, 3 allocs      |
+| Stats RecordRequest            | 197 ns, 3 allocs      |
+| HTTPS redirect (301)           | 576 ns, 4 allocs      |
+
+### End-to-end
+
+| Path                              | Result                |
+|-----------------------------------|-----------------------|
+| Direct request (no proxy)         | 166 us                |
+| Through Norway                    | 261 us (~95 us added) |
+| Full hot reload cycle             | 21 us                 |
+
+### Sustained load (vegeta)
+
+| Test                      | Throughput    | p50    | p90     | p99     | Success |
+|---------------------------|---------------|--------|---------|---------|---------|
+| 5k req/s for 10s          | 5,000 req/s   | 243 us | 634 us  | 908 us  | 100 %   |
+| 20k req/s for 10s         | 20,000 req/s  | 380 us | 2.12 ms | 14.6 ms | 100 %   |
+
+Run them yourself:
+
+```bash
+make bench         # all microbenchmarks (router, balance, middleware, stats, reload, proxy)
+make bench-load    # 5k req/s sustained for 10s
+make bench-stress  # 20k req/s for 10s
+make bench-all     # everything
+make help          # full target list
+```
+
 ## Progress
 
 ### Implemented
@@ -246,8 +338,8 @@ The file watcher monitors the config directory rather than the file directly so 
 - [x] Token bucket rate limiting (per-client IP, configurable rate/burst)
 - [x] Live stats endpoint (`/norway/stats` with routes, backends, latency)
 - [x] Hot reload (fsnotify file watch, SIGHUP, `POST /norway/reload`)
+- [x] TLS termination (per-entrypoint cert/key, HTTP -> HTTPS redirect)
+- [x] Benchmarks (microbench + vegeta load test, see [bench/](bench/))
 
 ### Coming Up
-- [ ] TLS termination
-- [ ] Benchmarks
 - [ ] TUI dashboard
