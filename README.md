@@ -14,6 +14,78 @@ Norway is a single binary that reads a `.conf` file and proxies HTTP traffic to 
 
 Numbers from a Ryzen 7 5800HS. Full breakdown in [bench/README.md](bench/README.md). Run `make bench-all` to reproduce.
 
+## Getting Started
+
+### 1. Build
+
+```bash
+git clone https://github.com/pixperk/norway
+cd norway
+go build -o norway ./cmd/norway
+```
+
+### 2. Write a config
+
+Save this as `norway.conf`:
+
+```nginx
+entrypoint web {
+    listen :8080
+}
+
+service api {
+    server http://localhost:9000
+}
+
+middleware logger {
+    type logging
+    format json
+}
+
+route api {
+    entrypoints web
+    host localhost
+    service api
+    use logger
+}
+```
+
+### 3. Start a backend
+
+In one terminal, run any HTTP server on port 9000. Norway ships with a tiny test backend you can use:
+
+```bash
+go run ./cmd/testbackend :9000
+```
+
+### 4. Run norway
+
+```bash
+./norway -config norway.conf
+```
+
+Norway will print `norway listening on :8080` and start proxying.
+
+### 5. Hit it
+
+```bash
+curl http://localhost:8080/hello
+```
+
+You should see the backend response, plus a structured JSON log line in the norway terminal.
+
+### 6. Check live stats
+
+```bash
+curl http://localhost:8080/norway/stats
+```
+
+### 7. Hot reload
+
+Edit `norway.conf` while norway is running and save. The file watcher reloads automatically. You can also `kill -HUP $(pgrep norway)` or `curl -X POST http://localhost:8080/norway/reload`.
+
+For the full DSL reference (every directive, every middleware type, validation rules), see [SYNTAX.md](SYNTAX.md).
+
 ## Architecture
 
 ![Norway Architecture](assets/norway_arch.png)
@@ -23,6 +95,8 @@ Numbers from a Ryzen 7 5800HS. Full breakdown in [bench/README.md](bench/README.
 Norway uses its own config language. No YAML, no TOML, no JSON. Just a clean block-based DSL that's purpose-built for proxy configuration.
 
 The DSL goes through a full compilation pipeline: `text -> tokens -> AST -> config structs -> validation`. Errors report exact line and column numbers.
+
+Full reference: [SYNTAX.md](SYNTAX.md).
 
 ```nginx
 # entrypoints define where norway listens
