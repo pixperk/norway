@@ -211,6 +211,25 @@ Hit `/norway/stats` on any entrypoint to get a live JSON snapshot of the proxy:
 
 All counters are atomic. The stats handler reads live pointers to backend state, so health and connection counts are always current, not cached.
 
+## Hot Reload
+
+Editing `norway.conf` does not require a restart. The router lives behind an `atomic.Value` wrapper, and a reload re-runs the full DSL pipeline (lex, parse, validate, build), then atomically swaps the live handler. New requests hit the new config, in-flight requests finish on the old one. Bad configs are logged and the old config keeps running.
+
+Three ways to trigger a reload:
+
+```bash
+# 1. Edit the file and save (fsnotify auto-detects)
+vim norway.conf
+
+# 2. POST to the reload endpoint
+curl -X POST http://localhost:8080/norway/reload
+
+# 3. Send SIGHUP to the process
+kill -HUP $(pgrep norway)
+```
+
+The file watcher monitors the config directory rather than the file directly so editor write-rename saves (vim, helix) are caught. Old health checkers are stopped on swap so background goroutines do not leak.
+
 ## Progress
 
 ### Implemented
@@ -226,9 +245,9 @@ All counters are atomic. The stats handler reads live pointers to backend state,
 - [x] Active health checks (background goroutines, auto-remove/restore)
 - [x] Token bucket rate limiting (per-client IP, configurable rate/burst)
 - [x] Live stats endpoint (`/norway/stats` with routes, backends, latency)
+- [x] Hot reload (fsnotify file watch, SIGHUP, `POST /norway/reload`)
 
 ### Coming Up
-- [ ] Dynamic config reload (hot reload via fsnotify, SIGHUP, API)
 - [ ] TLS termination
 - [ ] Benchmarks
 - [ ] TUI dashboard
