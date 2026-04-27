@@ -30,8 +30,8 @@ func loadConf(t *testing.T) *Config {
 func TestParseEntrypoints(t *testing.T) {
 	cfg := loadConf(t)
 
-	if len(cfg.Entrypoints) != 1 {
-		t.Fatalf("expected 1 entrypoint, got %d", len(cfg.Entrypoints))
+	if len(cfg.Entrypoints) != 2 {
+		t.Fatalf("expected 2 entrypoints, got %d", len(cfg.Entrypoints))
 	}
 
 	web := cfg.Entrypoints[0]
@@ -40,6 +40,17 @@ func TestParseEntrypoints(t *testing.T) {
 	}
 	if web.TLS != nil {
 		t.Error("web entrypoint should not have TLS")
+	}
+
+	websecure := cfg.Entrypoints[1]
+	if websecure.Name != "websecure" || websecure.Listen != ":8443" {
+		t.Errorf("websecure entrypoint: got name=%q listen=%q", websecure.Name, websecure.Listen)
+	}
+	if websecure.TLS == nil {
+		t.Fatal("websecure entrypoint should have TLS config")
+	}
+	if websecure.TLS.CertPath != "certs/cert.pem" || websecure.TLS.KeyPath != "certs/key.pem" {
+		t.Errorf("websecure TLS: got cert=%q key=%q", websecure.TLS.CertPath, websecure.TLS.KeyPath)
 	}
 }
 

@@ -31,3 +31,6 @@ go.work.sum
 # .idea/
 # .vscode/
 diag.md
+
+# Local TLS certs (self-signed for testing)
+certs/

@@ -58,18 +58,27 @@ func main() {
 	// watch config file for changes
 	reloader.WatchFile()
 
-	// start a listener for each entrypoint
+	// start a listener for each entrypoint, TLS or plain based on config
 	var servers []*http.Server
 	for _, ep := range cfg.Entrypoints {
 		srv := &http.Server{Addr: ep.Listen, Handler: swappable}
 		servers = append(servers, srv)
 
-		go func(s *http.Server) {
+		go func(s *http.Server, ep dsl.Entrypoint) {
+			if ep.TLS != nil {
+				fmt.Printf("norway listening on %s (TLS)\n", s.Addr)
+				err := s.ListenAndServeTLS(ep.TLS.CertPath, ep.TLS.KeyPath)
+				if err != nil && err != http.ErrServerClosed {
+					log.Fatalf("TLS server error on %s: %v", s.Addr, err)
+				}
+				return
+			}
+
 			fmt.Printf("norway listening on %s\n", s.Addr)
 			if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("server error on %s: %v", s.Addr, err)
 			}
-		}(srv)
+		}(srv, ep)
 	}
 
 	// SIGINT/SIGTERM = shutdown, SIGHUP = reload
@@ -246,6 +255,8 @@ func buildMiddlewares(names []string, configs map[string]dsl.Middleware) []middl
 				fmt.Sscanf(v, "%d", &burst)
 			}
 			mws = append(mws, middleware.RateLimit(rate, burst))
+		case "https-redirect":
+			mws = append(mws, middleware.HTTPSRedirect(mwCfg.Config["host"]))
 		}
 	}
 	return mws
