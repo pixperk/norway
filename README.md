@@ -86,6 +86,117 @@ Edit `norway.conf` while norway is running and save. The file watcher reloads au
 
 For the full DSL reference (every directive, every middleware type, validation rules), see [SYNTAX.md](SYNTAX.md).
 
+## Try the Features
+
+Run these in separate terminals against the running proxy. Each one shows off a different piece.
+
+### Watch load balancing in action
+
+Start two backends on different ports:
+
+```bash
+go run ./cmd/testbackend :9001 &
+go run ./cmd/testbackend :9002 &
+```
+
+Add the second server to the service block in `norway.conf`:
+
+```nginx
+service api {
+    server http://localhost:9001
+    server http://localhost:9002
+}
+```
+
+Save (norway hot-reloads), then hammer it:
+
+```bash
+for i in $(seq 1 10); do curl -s http://localhost:8080/ | jq -r .backend; done
+```
+
+You should see `:9001` and `:9002` alternating (round-robin).
+
+### See hot reload live
+
+In one terminal, run a continuous request loop:
+
+```bash
+while true; do curl -s -o /dev/null -w "%{http_code} " http://localhost:8080/; sleep 0.2; done
+```
+
+In another, edit `norway.conf` (change a backend, swap balance strategy, add a middleware) and save. The reload happens mid-stream with zero dropped requests. Norway logs `reload: config applied successfully`.
+
+### Trigger rate limiting
+
+Add this middleware and attach it to your route:
+
+```nginx
+middleware rate-limit {
+    type ratelimit
+    rate  5
+    burst 5
+}
+
+route api {
+    ...
+    use rate-limit
+}
+```
+
+Save, then flood:
+
+```bash
+for i in $(seq 1 20); do curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/; done
+```
+
+First 5 requests return `200`, the rest return `429` with a `Retry-After` header.
+
+### Watch live stats
+
+Tail the stats endpoint while you generate traffic:
+
+```bash
+watch -n 1 'curl -s http://localhost:8080/norway/stats | jq'
+```
+
+You'll see `total_requests`, `active_conns`, per-route counts, per-backend health update in real time.
+
+### Try TLS
+
+Generate a self-signed cert and add an HTTPS entrypoint:
+
+```bash
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout certs/key.pem -out certs/cert.pem -subj "/CN=localhost"
+```
+
+Add to `norway.conf`:
+
+```nginx
+entrypoint websecure {
+    listen :8443
+    tls {
+        cert certs/cert.pem
+        key  certs/key.pem
+    }
+}
+```
+
+Update your route to include `websecure` in `entrypoints`, save, then:
+
+```bash
+curl -k https://localhost:8443/
+```
+
+### Run the benchmarks
+
+```bash
+make bench-load    # 5k req/s sustained for 10s, prints percentile latencies
+make bench-stress  # 20k req/s for 10s
+make bench         # all microbenchmarks
+```
+
 ## Architecture
 
 ![Norway Architecture](assets/norway_arch.png)
